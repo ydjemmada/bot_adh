@@ -1,0 +1,22 @@
+services:
+  - type: worker
+    name: adhahi-telegram-monitor
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    autoDeployTrigger: commit
+    maxShutdownDelaySeconds: 30
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      - key: CHECK_INTERVAL_SECONDS
+        value: 600
+      - key: CHECK_TIMEOUT_SECONDS
+        value: 35
+      - key: TARGET_URL
+        value: https://adhahi.dz/register
+      - key: ERROR_SCREENSHOT_PATH
+        value: ""
