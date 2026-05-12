@@ -24,7 +24,10 @@ Make sure your local `.env` has real values:
 TELEGRAM_BOT_TOKEN=your_real_botfather_token
 TELEGRAM_CHAT_ID=your_numeric_chat_id
 CHECK_INTERVAL_SECONDS=600
-CHECK_TIMEOUT_SECONDS=35
+CHECK_TIMEOUT_SECONDS=90
+GOTO_TIMEOUT_SECONDS=45
+SELECTOR_TIMEOUT_SECONDS=30
+NAVIGATION_RETRIES=3
 TARGET_URL=https://adhahi.dz/register
 ERROR_SCREENSHOT_PATH=
 ```
@@ -124,5 +127,14 @@ Render will redeploy automatically.
 If Telegram reports a polling conflict, stop every old deployment that uses the same bot token, then redeploy Render.
 
 If Render says the bot token or chat ID is invalid, update the service environment variables in the Render dashboard and redeploy.
+
+If `/check` times out while opening `https://adhahi.dz/register`, confirm these Render environment variables are present, then redeploy:
+
+```bash
+CHECK_TIMEOUT_SECONDS=90
+GOTO_TIMEOUT_SECONDS=45
+SELECTOR_TIMEOUT_SECONDS=30
+NAVIGATION_RETRIES=3
+```
 
 If the website check fails because Chromium cannot start, check the Render build logs and confirm the service is using the Docker runtime from `render.yaml`.

@@ -9,6 +9,7 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from dotenv import load_dotenv
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import async_playwright
 from telegram import Update, BotCommand
 from telegram.error import Forbidden, TelegramError
@@ -27,7 +28,10 @@ def clean_env_value(name: str, default: str | None = None) -> str | None:
 TELEGRAM_BOT_TOKEN = clean_env_value("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = clean_env_value("TELEGRAM_CHAT_ID")
 CHECK_INTERVAL_SECONDS = int(os.getenv("CHECK_INTERVAL_SECONDS", "600"))
-CHECK_TIMEOUT_SECONDS = int(os.getenv("CHECK_TIMEOUT_SECONDS", "35"))
+CHECK_TIMEOUT_SECONDS = int(os.getenv("CHECK_TIMEOUT_SECONDS", "90"))
+GOTO_TIMEOUT_SECONDS = int(os.getenv("GOTO_TIMEOUT_SECONDS", "45"))
+SELECTOR_TIMEOUT_SECONDS = int(os.getenv("SELECTOR_TIMEOUT_SECONDS", "30"))
+NAVIGATION_RETRIES = int(os.getenv("NAVIGATION_RETRIES", "3"))
 URL = clean_env_value("TARGET_URL", "https://adhahi.dz/register")
 CHROMIUM_EXECUTABLE_PATH = clean_env_value("CHROMIUM_EXECUTABLE_PATH")
 ERROR_SCREENSHOT_PATH = clean_env_value("ERROR_SCREENSHOT_PATH", "")
@@ -196,11 +200,18 @@ async def _check_availability():
 
     available_wilayas: list[str] = []
     unavailable_wilayas: list[str] = []
+    wilaya_input_selector = "#reg-wilaya"
 
     async with async_playwright() as p:
         launch_options = {
             "headless": True,
-            "args": ["--disable-gpu", "--no-sandbox"],
+            "args": [
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--disable-extensions",
+                "--disable-background-networking",
+                "--no-sandbox",
+            ],
         }
         if CHROMIUM_EXECUTABLE_PATH:
             launch_options["executable_path"] = CHROMIUM_EXECUTABLE_PATH
@@ -211,19 +222,75 @@ async def _check_availability():
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/124.0.0.0 Safari/537.36"
-            )
+            ),
+            locale="ar-DZ",
+            timezone_id="Africa/Algiers",
+            viewport={"width": 1366, "height": 768},
+            extra_http_headers={
+                "Accept-Language": "ar-DZ,ar;q=0.9,fr-DZ;q=0.8,fr;q=0.7,en;q=0.6",
+            },
         )
         page = await context.new_page()
+        page.set_default_timeout(SELECTOR_TIMEOUT_SECONDS * 1000)
+        page.set_default_navigation_timeout(GOTO_TIMEOUT_SECONDS * 1000)
+
+        async def block_heavy_resources(route):
+            request = route.request
+            if request.resource_type in {"image", "media", "font"}:
+                await route.abort()
+            else:
+                await route.continue_()
+
+        await page.route("**/*", block_heavy_resources)
 
         try:
-            await page.goto(URL, wait_until="domcontentloaded", timeout=20000)
+            last_navigation_error: Exception | None = None
+            for attempt in range(1, NAVIGATION_RETRIES + 1):
+                try:
+                    logger.info(
+                        "Opening target page, attempt %d/%d...",
+                        attempt,
+                        NAVIGATION_RETRIES,
+                    )
+                    await page.goto(
+                        URL,
+                        wait_until="commit",
+                        timeout=GOTO_TIMEOUT_SECONDS * 1000,
+                    )
 
-            page_text = await page.locator("body").inner_text(timeout=5000)
+                    try:
+                        await page.wait_for_load_state("domcontentloaded", timeout=10000)
+                    except PlaywrightTimeoutError:
+                        logger.warning(
+                            "Page did not reach domcontentloaded quickly; continuing with selector wait."
+                        )
+
+                    await page.wait_for_selector(
+                        wilaya_input_selector,
+                        state="visible",
+                        timeout=SELECTOR_TIMEOUT_SECONDS * 1000,
+                    )
+                    break
+                except Exception as e:
+                    last_navigation_error = e
+                    logger.warning(
+                        "Page open attempt %d/%d failed: %s",
+                        attempt,
+                        NAVIGATION_RETRIES,
+                        e,
+                    )
+                    if attempt < NAVIGATION_RETRIES:
+                        await page.wait_for_timeout(2000 * attempt)
+            else:
+                raise AvailabilityCheckError(
+                    "Could not open the registration page after "
+                    f"{NAVIGATION_RETRIES} attempts. Last error: {last_navigation_error}"
+                )
+
+            page_text = await page.locator("body").inner_text(timeout=10000)
             if "Web Page Blocked" in page_text:
                 raise AvailabilityCheckError("The website returned a block page.")
 
-            wilaya_input_selector = "#reg-wilaya"
-            await page.wait_for_selector(wilaya_input_selector, timeout=10000)
             await page.click(wilaya_input_selector)
             await page.wait_for_timeout(1000)
 

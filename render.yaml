@@ -15,7 +15,13 @@ services:
       - key: CHECK_INTERVAL_SECONDS
         value: 600
       - key: CHECK_TIMEOUT_SECONDS
-        value: 35
+        value: 90
+      - key: GOTO_TIMEOUT_SECONDS
+        value: 45
+      - key: SELECTOR_TIMEOUT_SECONDS
+        value: 30
+      - key: NAVIGATION_RETRIES
+        value: 3
       - key: TARGET_URL
         value: https://adhahi.dz/register
       - key: ERROR_SCREENSHOT_PATH
