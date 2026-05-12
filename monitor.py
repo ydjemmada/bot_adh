@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import async_playwright
 from telegram import Update, BotCommand
-from telegram.error import Forbidden, TelegramError
+from telegram.error import Conflict, Forbidden, TelegramError
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -529,6 +529,20 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(message, parse_mode="HTML")
 
 
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    """Keep Telegram polling conflicts readable in hosted logs."""
+    error = context.error
+    if isinstance(error, Conflict):
+        logger.critical(
+            "Telegram polling conflict detected. Another deployment or local process is already using this bot token. "
+            "Stop the duplicate process/service, then restart this one."
+        )
+        context.application.stop_running()
+        return
+
+    logger.exception("Unhandled bot error", exc_info=error)
+
+
 # ---------------------------------------------------------------------------
 # Bot setup and startup
 # ---------------------------------------------------------------------------
@@ -589,6 +603,7 @@ def main():
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("check", check_command))
     application.add_handler(CommandHandler("status", status_command))
+    application.add_error_handler(error_handler)
 
     # Give manual checks room right after deploy before the first scheduled run.
     job_queue = application.job_queue
