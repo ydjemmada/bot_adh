@@ -4,6 +4,7 @@ import logging
 import re
 import sys
 import threading
+import time
 from html import escape
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -32,6 +33,7 @@ CHECK_TIMEOUT_SECONDS = int(os.getenv("CHECK_TIMEOUT_SECONDS", "90"))
 GOTO_TIMEOUT_SECONDS = int(os.getenv("GOTO_TIMEOUT_SECONDS", "45"))
 SELECTOR_TIMEOUT_SECONDS = int(os.getenv("SELECTOR_TIMEOUT_SECONDS", "30"))
 NAVIGATION_RETRIES = int(os.getenv("NAVIGATION_RETRIES", "3"))
+FIRST_CHECK_DELAY_SECONDS = int(os.getenv("FIRST_CHECK_DELAY_SECONDS", "180"))
 URL = clean_env_value("TARGET_URL", "https://adhahi.dz/register")
 CHROMIUM_EXECUTABLE_PATH = clean_env_value("CHROMIUM_EXECUTABLE_PATH")
 ERROR_SCREENSHOT_PATH = clean_env_value("ERROR_SCREENSHOT_PATH", "")
@@ -92,6 +94,8 @@ for handler in logging.getLogger().handlers:
 # Keep track of wilayas we have already notified about so we don't spam
 notified_wilayas: set[str] = set()
 availability_lock = asyncio.Lock()
+availability_check_started_at: float | None = None
+availability_check_source: str | None = None
 
 
 class AvailabilityCheckError(Exception):
@@ -193,6 +197,35 @@ async def check_availability():
         raise AvailabilityCheckError(
             f"The website check timed out after {CHECK_TIMEOUT_SECONDS} seconds."
         ) from exc
+
+
+async def run_availability_check(source: str):
+    """Run one availability check while tracking who owns the shared lock."""
+    global availability_check_started_at, availability_check_source
+
+    async with availability_lock:
+        availability_check_started_at = time.monotonic()
+        availability_check_source = source
+        try:
+            return await check_availability()
+        finally:
+            availability_check_started_at = None
+            availability_check_source = None
+
+
+def current_check_description() -> str:
+    if not availability_lock.locked():
+        return "No website check is running right now."
+
+    elapsed = 0
+    if availability_check_started_at is not None:
+        elapsed = int(time.monotonic() - availability_check_started_at)
+
+    source = availability_check_source or "unknown"
+    return (
+        f"A {source} website check has been running for {elapsed} seconds. "
+        f"The maximum check time is {CHECK_TIMEOUT_SECONDS} seconds."
+    )
 
 
 async def _check_availability():
@@ -359,8 +392,7 @@ async def scheduled_check(context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
-        async with availability_lock:
-            available_wilayas, _unavailable = await check_availability()
+        available_wilayas, _unavailable = await run_availability_check("scheduled")
     except AvailabilityCheckError as e:
         logger.error("Scheduled availability check failed: %s", e)
         return
@@ -428,7 +460,7 @@ async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if availability_lock.locked():
         await update.message.reply_text(
-            "⏳ A website check is already running. Please try again in about a minute.",
+            f"⏳ {current_check_description()}\n\nPlease try again shortly.",
             parse_mode="HTML",
         )
         return
@@ -436,8 +468,7 @@ async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔍 Checking availability now… please wait.")
 
     try:
-        async with availability_lock:
-            available_wilayas, unavailable_wilayas = await check_availability()
+        available_wilayas, unavailable_wilayas = await run_availability_check("manual")
     except AvailabilityCheckError as e:
         logger.error("Manual availability check failed: %s", e)
         await update.message.reply_text(
@@ -477,6 +508,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     notified_count = len(notified_wilayas)
+    current_check = current_check_description()
 
     if notified_wilayas:
         notified_list = "\n".join([f"  • {w}" for w in sorted(notified_wilayas)])
@@ -488,6 +520,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📊 <b>Monitor Status</b>\n\n"
         f"🟢 <b>Status:</b> Running\n"
         f"⏱️ <b>Interval:</b> Every {CHECK_INTERVAL_SECONDS // 60} minutes\n"
+        f"🔎 <b>Current check:</b> {escape(current_check)}\n"
         f"🔔 <b>Notified wilayas:</b> {notified_count}"
         f"{notified_section}\n\n"
         f"🕒 <b>Current time:</b> {current_time}\n"
@@ -557,12 +590,12 @@ def main():
     application.add_handler(CommandHandler("check", check_command))
     application.add_handler(CommandHandler("status", status_command))
 
-    # Schedule the periodic check (first run 10 seconds after startup)
+    # Give manual checks room right after deploy before the first scheduled run.
     job_queue = application.job_queue
     job_queue.run_repeating(
         scheduled_check,
         interval=CHECK_INTERVAL_SECONDS,
-        first=10,
+        first=FIRST_CHECK_DELAY_SECONDS,
         job_kwargs={"max_instances": 1},
     )
 
