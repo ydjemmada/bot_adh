@@ -533,11 +533,10 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     """Keep Telegram polling conflicts readable in hosted logs."""
     error = context.error
     if isinstance(error, Conflict):
-        logger.critical(
+        logger.error(
             "Telegram polling conflict detected. Another deployment or local process is already using this bot token. "
-            "Stop the duplicate process/service, then restart this one."
+            "The bot will keep retrying; stop the duplicate process/service if this continues."
         )
-        context.application.stop_running()
         return
 
     logger.exception("Unhandled bot error", exc_info=error)
@@ -615,7 +614,9 @@ def main():
     )
 
     logger.info(
-        "Bot is running. Auto-check every %d minutes.", CHECK_INTERVAL_SECONDS // 60
+        "Bot is running. Auto-check every %d minutes. First scheduled check in %d seconds.",
+        CHECK_INTERVAL_SECONDS // 60,
+        FIRST_CHECK_DELAY_SECONDS,
     )
 
     # Start polling for commands — this blocks and runs the event loop
