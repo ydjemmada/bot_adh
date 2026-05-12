@@ -10,6 +10,7 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from dotenv import load_dotenv
+import requests
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import async_playwright
 from telegram import Update, BotCommand
@@ -35,6 +36,12 @@ SELECTOR_TIMEOUT_SECONDS = int(os.getenv("SELECTOR_TIMEOUT_SECONDS", "30"))
 NAVIGATION_RETRIES = int(os.getenv("NAVIGATION_RETRIES", "3"))
 FIRST_CHECK_DELAY_SECONDS = int(os.getenv("FIRST_CHECK_DELAY_SECONDS", "180"))
 URL = clean_env_value("TARGET_URL", "https://adhahi.dz/register")
+WILAYA_QUOTAS_API_URL = clean_env_value(
+    "WILAYA_QUOTAS_API_URL",
+    "https://adhahi.dz/api/v1/public/wilaya-quotas",
+)
+API_TIMEOUT_SECONDS = int(os.getenv("API_TIMEOUT_SECONDS", "20"))
+BROWSER_FALLBACK_ENABLED = clean_env_value("BROWSER_FALLBACK_ENABLED", "false")
 CHROMIUM_EXECUTABLE_PATH = clean_env_value("CHROMIUM_EXECUTABLE_PATH")
 ERROR_SCREENSHOT_PATH = clean_env_value("ERROR_SCREENSHOT_PATH", "")
 PORT = clean_env_value("PORT")
@@ -139,6 +146,10 @@ def validate_configuration():
         raise ConfigurationError(" ".join(errors))
 
 
+def env_flag(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -187,7 +198,7 @@ async def reject_unauthorized(update: Update):
 
 
 async def check_availability():
-    """Uses Playwright to check adhahi.dz and returns (available, unavailable) wilaya lists."""
+    """Checks adhahi.dz and returns (available, unavailable) wilaya lists."""
     try:
         return await asyncio.wait_for(
             _check_availability(),
@@ -230,6 +241,120 @@ def current_check_description() -> str:
 
 async def _check_availability():
     logger.info("Checking availability on %s...", URL)
+
+    try:
+        return await asyncio.to_thread(_check_availability_api)
+    except AvailabilityCheckError as e:
+        if not env_flag(BROWSER_FALLBACK_ENABLED):
+            raise
+
+        logger.warning("API availability check failed; falling back to browser: %s", e)
+
+    return await _check_availability_browser()
+
+
+def _check_availability_api():
+    logger.info("Checking availability API on %s...", WILAYA_QUOTAS_API_URL)
+
+    headers = {
+        "Accept": "application/json",
+        "Accept-Language": "ar-DZ,ar;q=0.9,fr-DZ;q=0.8,fr;q=0.7,en;q=0.6",
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        ),
+    }
+
+    try:
+        response = requests.get(
+            WILAYA_QUOTAS_API_URL,
+            headers=headers,
+            timeout=API_TIMEOUT_SECONDS,
+        )
+    except requests.RequestException as exc:
+        raise AvailabilityCheckError(
+            f"Could not reach the wilaya quotas API within {API_TIMEOUT_SECONDS} seconds: {exc}"
+        ) from exc
+
+    if response.status_code >= 400:
+        raise AvailabilityCheckError(
+            f"The wilaya quotas API returned HTTP {response.status_code}."
+        )
+
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise AvailabilityCheckError("The wilaya quotas API did not return valid JSON.") from exc
+
+    if not isinstance(data, list):
+        raise AvailabilityCheckError("The wilaya quotas API returned an unexpected response.")
+
+    available_wilayas: list[str] = []
+    unavailable_wilayas: list[str] = []
+
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+
+        wilaya_name = format_wilaya_quota(item)
+        if not wilaya_name:
+            continue
+
+        if quota_item_is_available(item):
+            available_wilayas.append(wilaya_name)
+        else:
+            unavailable_wilayas.append(wilaya_name)
+
+    if not available_wilayas and not unavailable_wilayas:
+        raise AvailabilityCheckError("The wilaya quotas API returned no usable wilayas.")
+
+    logger.info(
+        "Availability API returned %d available and %d unavailable wilayas.",
+        len(available_wilayas),
+        len(unavailable_wilayas),
+    )
+    return available_wilayas, unavailable_wilayas
+
+
+def quota_item_is_available(item: dict) -> bool:
+    if isinstance(item.get("available"), bool):
+        return bool(item["available"])
+
+    remaining_quota = item.get("remainingQuota")
+    if remaining_quota is None:
+        return False
+
+    try:
+        return int(remaining_quota) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def format_wilaya_quota(item: dict) -> str:
+    code = str(item.get("wilayaCode") or item.get("code") or "").strip()
+    name = str(
+        item.get("wilayaNameAr")
+        or item.get("nameAr")
+        or item.get("wilayaNameFr")
+        or item.get("name")
+        or ""
+    ).strip()
+
+    if not name and not code:
+        return ""
+
+    if code:
+        digits = re.sub(r"\D", "", code)
+        if digits:
+            code = f"{int(digits):02d}"
+        return f"{code} - {name or code}"
+
+    return name
+
+
+async def _check_availability_browser():
+    logger.info("Checking availability with browser fallback on %s...", URL)
 
     available_wilayas: list[str] = []
     unavailable_wilayas: list[str] = []
@@ -474,7 +599,7 @@ async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "⚠️ <b>Could not complete the website check.</b>\n\n"
             f"{escape(str(e))}\n\n"
-            "The bot is still running, but adhahi.dz may be blocking or delaying the browser request.",
+            "The bot is still running, but adhahi.dz may be blocking or delaying the availability request.",
             parse_mode="HTML",
         )
         return

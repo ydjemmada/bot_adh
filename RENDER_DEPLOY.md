@@ -25,10 +25,13 @@ TELEGRAM_BOT_TOKEN=your_real_botfather_token
 TELEGRAM_CHAT_ID=your_numeric_chat_id
 CHECK_INTERVAL_SECONDS=600
 CHECK_TIMEOUT_SECONDS=90
+API_TIMEOUT_SECONDS=20
 GOTO_TIMEOUT_SECONDS=45
 SELECTOR_TIMEOUT_SECONDS=30
 NAVIGATION_RETRIES=3
 TARGET_URL=https://adhahi.dz/register
+WILAYA_QUOTAS_API_URL=https://adhahi.dz/api/v1/public/wilaya-quotas
+BROWSER_FALLBACK_ENABLED=false
 ERROR_SCREENSHOT_PATH=
 ```
 
@@ -132,9 +135,11 @@ If `/check` times out while opening `https://adhahi.dz/register`, confirm these 
 
 ```bash
 CHECK_TIMEOUT_SECONDS=90
+API_TIMEOUT_SECONDS=20
 GOTO_TIMEOUT_SECONDS=45
 SELECTOR_TIMEOUT_SECONDS=30
 NAVIGATION_RETRIES=3
+BROWSER_FALLBACK_ENABLED=false
 ```
 
 If the website check fails because Chromium cannot start, check the Render build logs and confirm the service is using the Docker runtime from `render.yaml`.
