@@ -16,8 +16,16 @@ services:
         value: 600
       - key: CHECK_TIMEOUT_SECONDS
         value: 90
+      - key: API_CONNECT_TIMEOUT_SECONDS
+        value: 6
       - key: API_TIMEOUT_SECONDS
         value: 20
+      - key: API_RETRIES
+        value: 3
+      - key: API_RETRY_DELAY_SECONDS
+        value: 2
+      - key: API_FORCE_IPV4
+        value: true
       - key: GOTO_TIMEOUT_SECONDS
         value: 45
       - key: SELECTOR_TIMEOUT_SECONDS
@@ -30,6 +38,8 @@ services:
         value: https://adhahi.dz/register
       - key: WILAYA_QUOTAS_API_URL
         value: https://adhahi.dz/api/v1/public/wilaya-quotas
+      - key: WILAYA_QUOTAS_API_URLS
+        value: https://adhahi.dz/api/v1/public/wilaya-quotas,https://www.adhahi.dz/api/v1/public/wilaya-quotas
       - key: BROWSER_FALLBACK_ENABLED
         value: false
       - key: ERROR_SCREENSHOT_PATH

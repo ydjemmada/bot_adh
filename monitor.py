@@ -2,15 +2,18 @@ import os
 import asyncio
 import logging
 import re
+import socket
 import sys
 import threading
 import time
+from contextlib import nullcontext
 from html import escape
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from dotenv import load_dotenv
 import requests
+import urllib3.util.connection as urllib3_connection
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import async_playwright
 from telegram import Update, BotCommand
@@ -40,7 +43,19 @@ WILAYA_QUOTAS_API_URL = clean_env_value(
     "WILAYA_QUOTAS_API_URL",
     "https://adhahi.dz/api/v1/public/wilaya-quotas",
 )
+WILAYA_QUOTAS_API_URLS = [
+    url.strip()
+    for url in clean_env_value(
+        "WILAYA_QUOTAS_API_URLS",
+        f"{WILAYA_QUOTAS_API_URL},https://www.adhahi.dz/api/v1/public/wilaya-quotas",
+    ).split(",")
+    if url.strip()
+]
+API_CONNECT_TIMEOUT_SECONDS = int(os.getenv("API_CONNECT_TIMEOUT_SECONDS", "6"))
 API_TIMEOUT_SECONDS = int(os.getenv("API_TIMEOUT_SECONDS", "20"))
+API_RETRIES = int(os.getenv("API_RETRIES", "3"))
+API_RETRY_DELAY_SECONDS = int(os.getenv("API_RETRY_DELAY_SECONDS", "2"))
+API_FORCE_IPV4 = clean_env_value("API_FORCE_IPV4", "true")
 BROWSER_FALLBACK_ENABLED = clean_env_value("BROWSER_FALLBACK_ENABLED", "false")
 CHROMIUM_EXECUTABLE_PATH = clean_env_value("CHROMIUM_EXECUTABLE_PATH")
 ERROR_SCREENSHOT_PATH = clean_env_value("ERROR_SCREENSHOT_PATH", "")
@@ -150,6 +165,17 @@ def env_flag(value: str | None) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+class force_ipv4_requests:
+    """Temporarily make urllib3 resolve only IPv4 addresses for Requests."""
+
+    def __enter__(self):
+        self.original_allowed_gai_family = urllib3_connection.allowed_gai_family
+        urllib3_connection.allowed_gai_family = lambda: socket.AF_INET
+
+    def __exit__(self, exc_type, exc, traceback):
+        urllib3_connection.allowed_gai_family = self.original_allowed_gai_family
+
+
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -254,7 +280,10 @@ async def _check_availability():
 
 
 def _check_availability_api():
-    logger.info("Checking availability API on %s...", WILAYA_QUOTAS_API_URL)
+    logger.info(
+        "Checking availability API using %d endpoint(s)...",
+        len(WILAYA_QUOTAS_API_URLS),
+    )
 
     headers = {
         "Accept": "application/json",
@@ -266,21 +295,64 @@ def _check_availability_api():
         ),
     }
 
-    try:
-        response = requests.get(
-            WILAYA_QUOTAS_API_URL,
-            headers=headers,
-            timeout=API_TIMEOUT_SECONDS,
-        )
-    except requests.RequestException as exc:
-        raise AvailabilityCheckError(
-            f"Could not reach the wilaya quotas API within {API_TIMEOUT_SECONDS} seconds: {exc}"
-        ) from exc
+    errors: list[str] = []
+    resolver_context = force_ipv4_requests() if env_flag(API_FORCE_IPV4) else nullcontext()
 
-    if response.status_code >= 400:
-        raise AvailabilityCheckError(
-            f"The wilaya quotas API returned HTTP {response.status_code}."
-        )
+    with requests.Session() as session:
+        with resolver_context:
+            for url in WILAYA_QUOTAS_API_URLS:
+                for attempt in range(1, API_RETRIES + 1):
+                    try:
+                        logger.info(
+                            "Calling wilaya quotas API %s, attempt %d/%d...",
+                            url,
+                            attempt,
+                            API_RETRIES,
+                        )
+                        response = session.get(
+                            url,
+                            headers=headers,
+                            timeout=(
+                                API_CONNECT_TIMEOUT_SECONDS,
+                                API_TIMEOUT_SECONDS,
+                            ),
+                        )
+                    except requests.RequestException as exc:
+                        errors.append(f"{url}: {exc}")
+                        logger.warning(
+                            "Wilaya quotas API attempt failed for %s (%d/%d): %s",
+                            url,
+                            attempt,
+                            API_RETRIES,
+                            exc,
+                        )
+                        if attempt < API_RETRIES:
+                            time.sleep(API_RETRY_DELAY_SECONDS)
+                        continue
+
+                    if response.status_code >= 400:
+                        errors.append(f"{url}: HTTP {response.status_code}")
+                        logger.warning(
+                            "Wilaya quotas API returned HTTP %d for %s.",
+                            response.status_code,
+                            url,
+                        )
+                        break
+
+                    break
+                else:
+                    continue
+
+                if response.status_code < 400:
+                    break
+            else:
+                details = " | ".join(errors[-4:]) if errors else "No API endpoints were configured."
+                raise AvailabilityCheckError(
+                    "Could not reach the wilaya quotas API. "
+                    f"Tried {len(WILAYA_QUOTAS_API_URLS)} endpoint(s) with IPv4 "
+                    f"{'enabled' if env_flag(API_FORCE_IPV4) else 'disabled'}. "
+                    f"Last errors: {details}"
+                )
 
     try:
         data = response.json()
