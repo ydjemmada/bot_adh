@@ -1,7 +1,7 @@
 # Adhahi.dz Telegram Monitor
 
-This bot checks `https://adhahi.dz/register` for available wilayas and sends Telegram
-alerts when availability appears.
+This bot checks Adhahi's public wilaya quotas API for available wilayas and sends
+Telegram alerts when availability appears.
 
 ## Render Deployment
 
@@ -19,7 +19,8 @@ Use Render's Blueprint flow after pushing the project to GitHub. See
 ## Upload Package
 
 For PythonAnywhere, upload `pythonanywhere_upload.zip` and unzip it into one project
-folder.
+folder. The PythonAnywhere package uses the optimized API-first checker and does not
+need Chromium/Playwright by default.
 
 ## Configure
 
@@ -28,7 +29,7 @@ Create `.env` from `.env.example` and set:
 ```bash
 TELEGRAM_BOT_TOKEN=your_real_botfather_token
 TELEGRAM_CHAT_ID=your_numeric_chat_id
-CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
+BROWSER_FALLBACK_ENABLED=false
 ERROR_SCREENSHOT_PATH=
 PORT=
 ```

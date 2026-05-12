@@ -7,15 +7,14 @@ import sys
 import threading
 import time
 from contextlib import nullcontext
-from html import escape
 from datetime import datetime
+from html import escape
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+
 from dotenv import load_dotenv
 import requests
 import urllib3.util.connection as urllib3_connection
-from playwright.async_api import TimeoutError as PlaywrightTimeoutError
-from playwright.async_api import async_playwright
 from telegram import Update, BotCommand
 from telegram.error import Conflict, Forbidden, TelegramError
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -427,6 +426,15 @@ def format_wilaya_quota(item: dict) -> str:
 
 async def _check_availability_browser():
     logger.info("Checking availability with browser fallback on %s...", URL)
+
+    try:
+        from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+        from playwright.async_api import async_playwright
+    except ImportError as exc:
+        raise AvailabilityCheckError(
+            "Browser fallback is enabled, but Playwright is not installed. "
+            "Install requirements-browser.txt or set BROWSER_FALLBACK_ENABLED=false."
+        ) from exc
 
     available_wilayas: list[str] = []
     unavailable_wilayas: list[str] = []
